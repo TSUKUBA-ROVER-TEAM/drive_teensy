@@ -3,6 +3,8 @@
 #include <Arduino.h>
 #include <Servo.h>
 #include <micro_ros_platformio.h>
+#include <SPI.h>
+#include <Adafruit_NeoPixel.h>
 
 #include <rcl/logging.h>
 #include <rcl/rcl.h>
@@ -10,18 +12,26 @@
 #include <rclc/rclc.h>
 
 #include <std_msgs/msg/float64_multi_array.h>
+#include <std_msgs/msg/u_int8_multi_array.h>
 
 #if !defined(MICRO_ROS_TRANSPORT_ARDUINO_SERIAL)
 #error This example is only avaliable for Arduino framework with serial transport.
 #endif
 
 #define PI 3.14
+#define LED_PIN       38
+#define NUM_LEDS 100
+
+Adafruit_NeoPixel pixels(NUM_LEDS, LED_PIN, NEO_GRB + NEO_KHZ800);
 
 rcl_subscription_t drive_command_subscriber;
 std_msgs__msg__Float64MultiArray drive_command_msg;
 
 rcl_subscription_t steer_command_subscriber;
 std_msgs__msg__Float64MultiArray steer_command_msg;
+
+rcl_subscription_t led_command_subscriber;
+std_msgs__msg__UInt8MultiArray led_command_msg;
 
 rcl_publisher_t drive_feedback_publisher;
 std_msgs__msg__Float64MultiArray drive_feedback_msg;
@@ -132,6 +142,23 @@ void steer_command_callback(const void *msgin) {
   }
 }
 
+void led_command_callback(const void *msgin) {
+  const std_msgs__msg__UInt8MultiArray * msg = (const std_msgs__msg__UInt8MultiArray *)msgin;
+
+  if (msg->data.size % 3 != 0) return;
+
+  int num_leds_to_update = msg->data.size / 3;
+  if (num_leds_to_update > NUM_LEDS) num_leds_to_update = NUM_LEDS;
+  for (int i = 0; i < num_leds_to_update; i++) {
+    uint8_t r = msg->data.data[i * 3];
+    uint8_t g = msg->data.data[i * 3 + 1];
+    uint8_t b = msg->data.data[i * 3 + 2];
+    
+    pixels.setPixelColor(i, pixels.Color(r, g, b));
+  }
+  pixels.show();
+}
+
 void setup() {
   Serial.begin(115200);
   set_microros_serial_transports(Serial);
@@ -154,6 +181,10 @@ void setup() {
       &steer_command_subscriber, &node,
       ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float64MultiArray),
       "steer_controller/commands"));
+  RCCHECK(rclc_subscription_init_default(
+      &led_command_subscriber, &node,
+      ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, UInt8MultiArray),
+      "/led"));
   RCCHECK(rclc_publisher_init_default(
       &drive_feedback_publisher, &node,
       ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float64MultiArray),
@@ -201,6 +232,25 @@ void setup() {
     steer_command_msg.layout.dim.data[i].label.data = (char *)malloc(
         steer_command_msg.layout.dim.data[i].label.capacity * sizeof(char));
   }
+  
+  led_command_msg.data.capacity = 300;
+  led_command_msg.data.size = 100;
+  led_command_msg.data.data =
+      (uint8_t *)malloc(led_command_msg.data.capacity * sizeof(uint8_t)); 
+    
+  led_command_msg.layout.dim.capacity = 300;
+  led_command_msg.layout.dim.size = 0;
+  led_command_msg.layout.dim.data =
+      (std_msgs__msg__MultiArrayDimension *)malloc(
+          led_command_msg.layout.dim.capacity *
+          sizeof(std_msgs__msg__MultiArrayDimension));
+
+  for (size_t i = 0; i < led_command_msg.layout.dim.capacity; i++) {
+    led_command_msg.layout.dim.data[i].label.capacity = 10;
+    led_command_msg.layout.dim.data[i].label.size = 0;
+    led_command_msg.layout.dim.data[i].label.data = (char *)malloc(
+        led_command_msg.layout.dim.data[i].label.capacity * sizeof(char));
+  }
 
   drive_feedback_msg.data.capacity = 100;
   drive_feedback_msg.data.size = 4;
@@ -229,6 +279,9 @@ void setup() {
   RCCHECK(rclc_executor_add_subscription(&executor, &steer_command_subscriber,
                                          &steer_command_msg,
                                          &steer_command_callback, ON_NEW_DATA));
+  RCCHECK(rclc_executor_add_subscription(&executor, &led_command_subscriber,
+                                         &led_command_msg,
+                                         &led_command_callback, ON_NEW_DATA));
 
   steer_left_forward.attach(28);
   steer_right_forward.attach(29);
@@ -237,6 +290,7 @@ void setup() {
 
   pinMode(13, OUTPUT);
   digitalWrite(13, HIGH);
+  pixels.begin();
 }
 
 void loop() {
