@@ -30,11 +30,14 @@ std_msgs__msg__Float64MultiArray drive_command_msg;
 rcl_subscription_t steer_command_subscriber;
 std_msgs__msg__Float64MultiArray steer_command_msg;
 
-rcl_subscription_t led_command_subscriber;
-std_msgs__msg__UInt8MultiArray led_command_msg;
+rcl_subscription_t arm_command_subscriber;
+std_msgs__msg__Float64MultiArray arm_command_msg;
 
 rcl_publisher_t drive_feedback_publisher;
 std_msgs__msg__Float64MultiArray drive_feedback_msg;
+
+rcl_publisher_t arm_feedback_publisher;
+std_msgs__msg__Float64MultiArray arm_feedback_msg;
 
 rclc_executor_t executor;
 rclc_support_t support;
@@ -44,14 +47,16 @@ rcl_timer_t timer;
 
 C610Bus<CAN2> bus;
 long last_time = 0;
-int32_t target_current[4] = {0, 0, 0, 0};
-double target_velocity[4] = {0.0, 0.0, 0.0, 0.0};
+int32_t target_current[6] = {0, 0, 0, 0, 0, 0};
+double target_velocity[6] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
 double steer_angle[4] = {0.0, 0.0, 0.0, 0.0};
 
 VelocityPID drive_left_forward(1000.0, 0.0, 0.0, 1.0);
 VelocityPID drive_right_forward(1000.0, 0.0, 0.0, 1.0);
 VelocityPID drive_left_backward(1000.0, 0.0, 0.0, 1.0);
 VelocityPID drive_right_backward(1000.0, 0.0, 0.0, 1.0);
+VelocityPID arm_1_joint(1000.0, 0.0, 0.0, 1.0);
+VelocityPID hand_joint(1000.0, 0.0, 0.0, 1.0);
 
 Servo steer_left_forward;
 Servo steer_right_forward;
@@ -99,17 +104,28 @@ void timer_callback(rcl_timer_t *timer, int64_t last_call_time) {
           target_velocity[3] * -1.0, bus.Get(3).Velocity(),
           (now - last_time) / 1000.0);
 
-      bus.CommandTorques(target_current[0], target_current[1] ,
+      target_current[4] = arm_1_joint.compute(target_velocity[4], bus.Get(4).Velocity(), (now - last_time) / 1000.0);
+      target_current[5] = hand_joint.compute(target_velocity[5], bus.Get(5).Velocity(), (now - last_time) / 1000.0);
+
+      bus.CommandTorques(target_current[0], target_current[1],
                          target_current[2], target_current[3],
                          C610Subbus::kOneToFourBlinks);
+      bus.CommandTorques(target_current[4], target_current[5], 0, 0,
+                         C610Subbus::kFiveToEightBlinks);
 
       drive_feedback_msg.data.size = 4;
       drive_feedback_msg.data.data[0] = bus.Get(0).Velocity();
       drive_feedback_msg.data.data[1] = bus.Get(1).Velocity();
       drive_feedback_msg.data.data[2] = bus.Get(2).Velocity();
       drive_feedback_msg.data.data[3] = bus.Get(3).Velocity();
+      arm_feedback_msg.data.size = 2;
+      arm_feedback_msg.data.data[0] = bus.Get(4).Velocity();
+      arm_feedback_msg.data.data[1] = bus.Get(5).Velocity();
+
       RCSOFTCHECK(
           rcl_publish(&drive_feedback_publisher, &drive_feedback_msg, NULL));
+      RCSOFTCHECK(
+          rcl_publish(&arm_feedback_publisher, &arm_feedback_msg, NULL));
 
       steer_left_forward.write(
           static_cast<int>(90 + (steer_angle[0] / PI) * 120 * -1.0));
@@ -142,21 +158,12 @@ void steer_command_callback(const void *msgin) {
   }
 }
 
-void led_command_callback(const void *msgin) {
-  const std_msgs__msg__UInt8MultiArray * msg = (const std_msgs__msg__UInt8MultiArray *)msgin;
-
-  if (msg->data.size % 3 != 0) return;
-
-  int num_leds_to_update = msg->data.size / 3;
-  if (num_leds_to_update > NUM_LEDS) num_leds_to_update = NUM_LEDS;
-  for (int i = 0; i < num_leds_to_update; i++) {
-    uint8_t r = msg->data.data[i * 3];
-    uint8_t g = msg->data.data[i * 3 + 1];
-    uint8_t b = msg->data.data[i * 3 + 2];
-    
-    pixels.setPixelColor(i, pixels.Color(r, g, b));
+void arm_command_callback(const void *msgin) {
+  const std_msgs__msg__Float64MultiArray *arm_command_msg =
+      (const std_msgs__msg__Float64MultiArray *)msgin;
+  for (int i = 0; i < 2; i++) {
+    target_velocity[i + 4] = arm_command_msg->data.data[i];
   }
-  pixels.show();
 }
 
 void setup() {
@@ -178,17 +185,21 @@ void setup() {
       ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float64MultiArray),
       "drive_controller/commands"));
   RCCHECK(rclc_subscription_init_default(
+      &arm_command_subscriber, &node,
+      ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float64MultiArray),
+      "arm_controller/commands"));
+  RCCHECK(rclc_subscription_init_default(
       &steer_command_subscriber, &node,
       ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float64MultiArray),
       "steer_controller/commands"));
-  RCCHECK(rclc_subscription_init_default(
-      &led_command_subscriber, &node,
-      ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, UInt8MultiArray),
-      "/led"));
   RCCHECK(rclc_publisher_init_default(
       &drive_feedback_publisher, &node,
       ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float64MultiArray),
       "drive_controller/feedbacks"));
+  RCCHECK(rclc_publisher_init_default(
+      &arm_feedback_publisher, &node,
+      ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float64MultiArray),
+      "arm_controller/feedbacks"));
 
   // create timer for 20ms update rate
   const unsigned int timer_timeout = 100; // 100 Hz
@@ -214,6 +225,25 @@ void setup() {
         drive_command_msg.layout.dim.data[i].label.capacity * sizeof(char));
   }
 
+  arm_command_msg.data.capacity = 100;
+  arm_command_msg.data.size = 2;
+  arm_command_msg.data.data =
+      (double *)malloc(arm_command_msg.data.capacity * sizeof(double));
+  
+    arm_command_msg.layout.dim.capacity = 100;
+  arm_command_msg.layout.dim.size = 0;
+  arm_command_msg.layout.dim.data =
+      (std_msgs__msg__MultiArrayDimension *)malloc(
+          arm_command_msg.layout.dim.capacity *
+          sizeof(std_msgs__msg__MultiArrayDimension)); 
+
+  for (size_t i = 0; i < arm_command_msg.layout.dim.capacity; i++) {
+    arm_command_msg.layout.dim.data[i].label.capacity = 10;
+    arm_command_msg.layout.dim.data[i].label.size = 0;
+    arm_command_msg.layout.dim.data[i].label.data = (char *)malloc(
+        arm_command_msg.layout.dim.data[i].label.capacity * sizeof(char));
+  }
+
   steer_command_msg.data.capacity = 100;
   steer_command_msg.data.size = 4;
   steer_command_msg.data.data =
@@ -231,25 +261,6 @@ void setup() {
     steer_command_msg.layout.dim.data[i].label.size = 0;
     steer_command_msg.layout.dim.data[i].label.data = (char *)malloc(
         steer_command_msg.layout.dim.data[i].label.capacity * sizeof(char));
-  }
-  
-  led_command_msg.data.capacity = 300;
-  led_command_msg.data.size = 100;
-  led_command_msg.data.data =
-      (uint8_t *)malloc(led_command_msg.data.capacity * sizeof(uint8_t)); 
-    
-  led_command_msg.layout.dim.capacity = 300;
-  led_command_msg.layout.dim.size = 0;
-  led_command_msg.layout.dim.data =
-      (std_msgs__msg__MultiArrayDimension *)malloc(
-          led_command_msg.layout.dim.capacity *
-          sizeof(std_msgs__msg__MultiArrayDimension));
-
-  for (size_t i = 0; i < led_command_msg.layout.dim.capacity; i++) {
-    led_command_msg.layout.dim.data[i].label.capacity = 10;
-    led_command_msg.layout.dim.data[i].label.size = 0;
-    led_command_msg.layout.dim.data[i].label.data = (char *)malloc(
-        led_command_msg.layout.dim.data[i].label.capacity * sizeof(char));
   }
 
   drive_feedback_msg.data.capacity = 100;
@@ -270,19 +281,38 @@ void setup() {
         drive_feedback_msg.layout.dim.data[i].label.capacity * sizeof(char));
   }
 
+
+  arm_feedback_msg.data.capacity = 100;
+  arm_feedback_msg.data.size = 2;
+  arm_feedback_msg.data.data =
+      (double *)malloc(arm_feedback_msg.data.capacity * sizeof(double));
+  arm_feedback_msg.layout.dim.capacity = 100;
+  arm_feedback_msg.layout.dim.size = 0;
+  arm_feedback_msg.layout.dim.data =
+      (std_msgs__msg__MultiArrayDimension *)malloc(
+          arm_feedback_msg.layout.dim.capacity *
+          sizeof(std_msgs__msg__MultiArrayDimension));
+
+  for (size_t i = 0; i < arm_feedback_msg.layout.dim.capacity; i++) {
+    arm_feedback_msg.layout.dim.data[i].label.capacity = 10;
+    arm_feedback_msg.layout.dim.data[i].label.size = 0;
+    arm_feedback_msg.layout.dim.data[i].label.data = (char *)malloc(
+        arm_feedback_msg.layout.dim.data[i].label.capacity * sizeof(char));
+  }
+
   // create executor
-  RCCHECK(rclc_executor_init(&executor, &support.context, 4, &allocator));
+  RCCHECK(rclc_executor_init(&executor, &support.context, 6, &allocator));
   RCCHECK(rclc_executor_add_timer(&executor, &timer));
   RCCHECK(rclc_executor_add_subscription(&executor, &drive_command_subscriber,
                                          &drive_command_msg,
                                          &drive_command_callback, ON_NEW_DATA));
+  RCCHECK(rclc_executor_add_subscription(&executor, &arm_command_subscriber,
+                                         &arm_command_msg,
+                                         &arm_command_callback, ON_NEW_DATA));
   RCCHECK(rclc_executor_add_subscription(&executor, &steer_command_subscriber,
                                          &steer_command_msg,
                                          &steer_command_callback, ON_NEW_DATA));
-  RCCHECK(rclc_executor_add_subscription(&executor, &led_command_subscriber,
-                                         &led_command_msg,
-                                         &led_command_callback, ON_NEW_DATA));
-
+                                         
   steer_left_forward.attach(28);
   steer_right_forward.attach(29);
   steer_left_backward.attach(8);
