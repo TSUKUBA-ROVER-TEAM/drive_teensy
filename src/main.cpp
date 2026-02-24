@@ -22,6 +22,9 @@
 #define LED_PIN       38
 #define NUM_LEDS 100
 
+#define SERVO_SCALE 130.0
+#define SERVO_ORIGIN 85
+
 Adafruit_NeoPixel pixels(NUM_LEDS, LED_PIN, NEO_GRB + NEO_KHZ800);
 
 rcl_subscription_t drive_command_subscriber;
@@ -128,13 +131,13 @@ void timer_callback(rcl_timer_t *timer, int64_t last_call_time) {
           rcl_publish(&arm_feedback_publisher, &arm_feedback_msg, NULL));
 
       steer_left_forward.write(
-          static_cast<int>(90 + (steer_angle[0] / PI) * 120 * -1.0));
+          static_cast<int>(SERVO_ORIGIN + (steer_angle[0] / PI) * SERVO_SCALE));
       steer_right_forward.write(
-          static_cast<int>(90 + (steer_angle[1] / PI) * 120));
+          static_cast<int>(80 + (steer_angle[1] / PI) * SERVO_SCALE * -1.0));
       steer_left_backward.write(
-          static_cast<int>(90 + (steer_angle[2] / PI) * 120));
+          static_cast<int>(80 + (steer_angle[2] / PI) * SERVO_SCALE * -1.0));
       steer_right_backward.write(
-          static_cast<int>(90 + (steer_angle[3] / PI) * 120 * -1.0));
+          static_cast<int>(SERVO_ORIGIN + (steer_angle[3] / PI) * SERVO_SCALE));
 
       last_time = now;
     }
