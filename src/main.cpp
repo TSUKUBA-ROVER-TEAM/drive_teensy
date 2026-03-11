@@ -54,6 +54,14 @@ int32_t target_current[6] = {0, 0, 0, 0, 0, 0};
 double target_velocity[6] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
 double steer_angle[4] = {0.0, 0.0, 0.0, 0.0};
 
+// ウォッチドッグ用：最終コマンド受信時刻 [ms]
+unsigned long last_drive_command_time = 0;
+unsigned long last_steer_command_time = 0;
+unsigned long last_arm_command_time = 0;
+
+// ウォッチドッグタイムアウト [ms]（この期間コマンドが来なければ停止）
+const unsigned long WATCHDOG_TIMEOUT_MS = 200;
+
 VelocityPID drive_left_forward(1000.0, 0.0, 0.0, 1.0);
 VelocityPID drive_right_forward(1000.0, 0.0, 0.0, 1.0);
 VelocityPID drive_left_backward(1000.0, 0.0, 0.0, 1.0);
@@ -92,6 +100,20 @@ void timer_callback(rcl_timer_t *timer, int64_t last_call_time) {
   if (timer != NULL) {
     bus.PollCAN();
     long now = millis();
+
+    // ウォッチドッグ: 一定時間コマンドが来なければ指令値をゼロにする
+    if (now - last_drive_command_time > WATCHDOG_TIMEOUT_MS) {
+      for (int i = 0; i < 4; i++) target_velocity[i] = 0.0;
+    }
+    if (now - last_arm_command_time > WATCHDOG_TIMEOUT_MS) {
+      target_velocity[4] = 0.0;
+      target_velocity[5] = 0.0;
+    }
+    // ステアはタイムアウト時に中立位置へ戻す
+    if (now - last_steer_command_time > WATCHDOG_TIMEOUT_MS) {
+      for (int i = 0; i < 4; i++) steer_angle[i] = 0.0;
+    }
+
     if (now - last_time >= 10) {
 
       target_current[0] =
@@ -151,6 +173,7 @@ void drive_command_callback(const void *msgin) {
   for (int i = 0; i < 4; i++) {
     target_velocity[i] = drive_command_msg->data.data[i];
   }
+  last_drive_command_time = millis();  // ウォッチドッグ用タイムスタンプ更新
 }
 
 void steer_command_callback(const void *msgin) {
@@ -159,6 +182,7 @@ void steer_command_callback(const void *msgin) {
   for (int i = 0; i < 4; i++) {
     steer_angle[i] = steer_command_msg->data.data[i];
   }
+  last_steer_command_time = millis();  // ウォッチドッグ用タイムスタンプ更新
 }
 
 void arm_command_callback(const void *msgin) {
@@ -167,6 +191,7 @@ void arm_command_callback(const void *msgin) {
   for (int i = 0; i < 2; i++) {
     target_velocity[i + 4] = arm_command_msg->data.data[i];
   }
+  last_arm_command_time = millis();  // ウォッチドッグ用タイムスタンプ更新
 }
 
 void setup() {
